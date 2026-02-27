@@ -5,6 +5,6 @@ datasources:
     type: influxdb
     access: proxy
     url: http://influxdb:8086
-    database: mute
+    database: r8080
     isDefault: true
     editable: true

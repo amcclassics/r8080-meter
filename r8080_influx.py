@@ -3,17 +3,18 @@
 REED R8080 → InfluxDB bridge.
 Reads live dB from the R8080 and writes to InfluxDB line protocol over HTTP.
 """
-import sys
+import argparse
 import time
 import datetime
 import urllib.request
 import urllib.error
 
-from usb_reader import find_usb_device, read_spl_value, R8080Device
+from usb_reader import connect
 import logging
 
-INFLUXDB_URL = "http://localhost:9186/write?db=mute"
+INFLUXDB_URL = "http://localhost:9186/write?db=r8080"
 POLL_INTERVAL = 1  # seconds between reads (R8080 cycle takes ~1s)
+DEFAULT_DB_THRESHOLD = 65  # minimum dB to log (set to 0 to log everything)
 
 logger = logging.getLogger("r8080_influx")
 logging.basicConfig(
@@ -35,26 +36,40 @@ def write_influx(db_value: float):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="REED R8080 → InfluxDB bridge")
+    parser.add_argument(
+        "--threshold", type=float, default=DEFAULT_DB_THRESHOLD,
+        help="Only log readings above this dB level (default: 0 = log everything)",
+    )
+    args = parser.parse_args()
+
+    threshold = args.threshold
     logger.info("REED R8080 -> InfluxDB bridge starting")
     logger.info(f"InfluxDB endpoint: {INFLUXDB_URL}")
+    if threshold > 0:
+        logger.info(f"Threshold: only logging readings above {threshold:.1f} dB")
 
-    dev = find_usb_device(None, None, logger)
-    logger.info(f"Device type: {type(dev).__name__}")
+    dev = connect(logger)
 
     reading_count = 0
+    skipped_count = 0
     try:
         while True:
-            db = read_spl_value(dev, logger)
+            db = dev.read_spl()
             now = datetime.datetime.now().strftime("%H:%M:%S")
             if db is not None:
-                write_influx(db)
-                reading_count += 1
                 bar = "#" * int(max(0, db - 30))
-                print(f"  {now}  {db:5.1f} dB  {bar}  [#{reading_count}]", flush=True)
+                if db >= threshold:
+                    write_influx(db)
+                    reading_count += 1
+                    print(f"  {now}  {db:5.1f} dB  {bar}  [#{reading_count}]", flush=True)
+                else:
+                    skipped_count += 1
+                    print(f"  {now}  {db:5.1f} dB  {bar}  (below threshold)", flush=True)
             else:
                 print(f"  {now}  -- no reading --", flush=True)
     except KeyboardInterrupt:
-        logger.info(f"Stopped. {reading_count} readings sent to InfluxDB.")
+        logger.info(f"Stopped. {reading_count} readings logged, {skipped_count} below threshold.")
 
 
 if __name__ == "__main__":

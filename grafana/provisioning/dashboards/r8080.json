@@ -2,7 +2,7 @@
   "id": null,
   "uid": "r8080-spl",
   "title": "REED R8080 Sound Level Meter",
-  "tags": ["mute", "r8080", "noise"],
+  "tags": ["r8080", "spl", "noise"],
   "timezone": "browser",
   "refresh": "5s",
   "time": {

@@ -12,8 +12,6 @@ Reads live dB SPL from the meter over USB, streams it into InfluxDB, and display
 - [REED R8080](https://www.reedinstruments.com/product/r8080-sound-level-meter-with-usb) sound level meter (USB HID, Holtek chipset)
 - Any Linux machine with a USB port
 
-Also supports the HY1361 meter (auto-detected).
-
 ## Quick start
 
 ### 1. Install the udev rule (USB permissions)
@@ -57,11 +55,19 @@ You should see live readings in the terminal:
   14:32:03   48.7 dB  ##################  [#2]
 ```
 
+To only log sounds above a certain level (reduces InfluxDB storage):
+
+```bash
+python3 r8080_influx.py --threshold 65
+```
+
+Readings below the threshold are still displayed in the terminal but not written to InfluxDB.
+
 ### 5. View the dashboard
 
 Open [http://localhost:9100](http://localhost:9100) in your browser. The **REED R8080 Sound Level Meter** dashboard appears automatically.
 
-Default Grafana credentials: `admin` / `mute` (anonymous viewing is also enabled).
+Default Grafana credentials: `admin` / `r8080` (anonymous viewing is also enabled).
 
 ## Project structure
 
@@ -70,7 +76,7 @@ r8080-meter/
 ├── docker-compose.yml          # InfluxDB 1.8 + Grafana
 ├── grafana/provisioning/       # Auto-configured datasource + dashboard
 ├── r8080_influx.py             # Bridge: reads R8080 → writes InfluxDB
-├── usb_reader.py               # USB driver (R8080 + HY1361)
+├── usb_reader.py               # R8080 USB driver
 ├── 99-decibel-meter.rules      # udev rule for USB permissions
 └── requirements.txt            # pyusb
 ```

@@ -1,6 +1,6 @@
 apiVersion: 1
 providers:
-  - name: mute
+  - name: r8080
     orgId: 1
     folder: ""
     type: file

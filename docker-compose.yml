@@ -3,19 +3,19 @@ version: "3.8"
 services:
   influxdb:
     image: influxdb:1.8
-    container_name: mute-influxdb
+    container_name: r8080-influxdb
     restart: unless-stopped
     ports:
       - "9186:8086"
     volumes:
       - influxdb-data:/var/lib/influxdb
     environment:
-      - INFLUXDB_DB=mute
+      - INFLUXDB_DB=r8080
       - INFLUXDB_HTTP_AUTH_ENABLED=false
 
   grafana:
     image: grafana/grafana:latest
-    container_name: mute-grafana
+    container_name: r8080-grafana
     restart: unless-stopped
     ports:
       - "9100:3000"
@@ -24,7 +24,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=mute
+      - GF_SECURITY_ADMIN_PASSWORD=r8080
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     depends_on:

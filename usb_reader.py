@@ -5,33 +5,12 @@ from typing import Optional
 try:
     import usb.core
     import usb.util
-except ImportError:  # pragma: no cover - dependency is installed in the image
-    usb = None  # type: ignore
-
-
-DEFAULT_VENDOR_ID = 0x16C0
-DEFAULT_PRODUCT_ID = 0x05DC
+except ImportError:
+    usb = None
 
 # REED R8080 identifiers (Holtek Semiconductor)
 R8080_VENDOR_ID = 0x04D9
 R8080_PRODUCT_ID = 0xE000
-
-# Known SPL meter devices: (VID, PID, device_type)
-KNOWN_DEVICES = [
-    (DEFAULT_VENDOR_ID, DEFAULT_PRODUCT_ID, "hy1361"),
-    (R8080_VENDOR_ID, R8080_PRODUCT_ID, "r8080"),
-]
-
-
-def convert_raw_to_spl(raw: bytes) -> float:
-    """
-    Convert raw bytes from the HY1361 SPL meter into a dB SPL value.
-    Formula derived from the device specification.
-    """
-    if len(raw) < 2:
-        return 0.0
-    value = (raw[0] + ((raw[1] & 3) * 256)) * 0.1 + 30
-    return round(float(value), 1)
 
 
 class R8080Device:
@@ -131,81 +110,17 @@ class R8080Device:
             return None
 
 
-def find_usb_device(vendor_id: Optional[int], product_id: Optional[int], logger):
-    """
-    Locate the SPL USB device. If specific VID/PID are given, use those.
-    Otherwise auto-detect from known devices. Exits the process if not found.
-    """
+def connect(logger) -> R8080Device:
+    """Connect to the R8080 and return the device. Exits if not found."""
     if usb is None:
-        logger.error("pyusb is not installed. Cannot read SPL meter.")
+        logger.error("pyusb is not installed. Cannot read R8080.")
         sys.exit(1)
 
-    # If user specified VID/PID, use those directly
-    if vendor_id is not None and product_id is not None:
-        # Check if this is an R8080
-        if vendor_id == R8080_VENDOR_ID and product_id == R8080_PRODUCT_ID:
-            r8080 = R8080Device(logger)
-            try:
-                r8080.connect()
-                logger.info(f"REED R8080 connected (VID=0x{vendor_id:04X}, PID=0x{product_id:04X})")
-                return r8080
-            except Exception as exc:
-                logger.error(f"R8080 connection failed: {exc}")
-                sys.exit(1)
-
-        # Otherwise treat as HY1361-compatible
-        dev = usb.core.find(idVendor=vendor_id, idProduct=product_id)
-        if dev is None:
-            logger.error(f"SPL meter not found (VID=0x{vendor_id:04X}, PID=0x{product_id:04X}). Exiting.")
-            sys.exit(1)
-        try:
-            if dev.is_kernel_driver_active(0):
-                dev.detach_kernel_driver(0)
-        except Exception:
-            pass
-        return dev
-
-    # Auto-detect: try each known device
-    for vid, pid, device_type in KNOWN_DEVICES:
-        dev = usb.core.find(idVendor=vid, idProduct=pid)
-        if dev is not None:
-            if device_type == "r8080":
-                r8080 = R8080Device(logger)
-                try:
-                    r8080.connect()
-                    logger.info(f"Auto-detected REED R8080 (VID=0x{vid:04X}, PID=0x{pid:04X})")
-                    return r8080
-                except Exception as exc:
-                    logger.warning(f"R8080 detected but connection failed: {exc}")
-                    continue
-            else:
-                try:
-                    if dev.is_kernel_driver_active(0):
-                        dev.detach_kernel_driver(0)
-                except Exception:
-                    pass
-                logger.info(f"Auto-detected SPL meter (VID=0x{vid:04X}, PID=0x{pid:04X})")
-                return dev
-
-    # Nothing found
-    logger.error("No supported SPL meter found. Exiting.")
-    sys.exit(1)
-
-
-def read_spl_value(device, logger) -> Optional[float]:
-    """
-    Read a single SPL value from the USB device.
-    Supports both HY1361 (pyusb device) and R8080 (R8080Device wrapper).
-    Returns None on transient failures.
-    """
-    if isinstance(device, R8080Device):
-        return device.read_spl()
-
-    # Original HY1361 path
+    dev = R8080Device(logger)
     try:
-        data = device.ctrl_transfer(0xC0, 4, 0, 0, 200)
-        return convert_raw_to_spl(bytes(data))
+        dev.connect()
+        logger.info(f"REED R8080 connected (VID=0x{R8080_VENDOR_ID:04X}, PID=0x{R8080_PRODUCT_ID:04X})")
+        return dev
     except Exception as exc:
-        logger.warning(f"USB read failed: {exc}")
-        time.sleep(0.1)
-        return None
+        logger.error(f"R8080 not found: {exc}")
+        sys.exit(1)
