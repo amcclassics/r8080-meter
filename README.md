@@ -2,7 +2,7 @@
 
 Linux driver and Grafana dashboard for the **REED R8080** USB sound level meter.
 
-Reads live dB SPL from the meter over USB, streams it into InfluxDB, and displays it on a pre-built Grafana dashboard with a gauge, time series, peak bars, and statistics.
+Reads live dB SPL from the meter over USB, streams it into InfluxDB, and displays it on a pre-built Grafana dashboard with a gauge, time series, peak bars, and statistics. Optionally publishes to Home Assistant via MQTT.
 
 ![Dashboard screenshot](docs/screenshot.png)
 <!-- TODO: add actual screenshot -->
@@ -63,7 +63,68 @@ python3 r8080_influx.py --threshold 65
 
 Readings below the threshold are still displayed in the terminal but not written to InfluxDB.
 
-### 5. View the dashboard
+### 5. (Optional) Home Assistant via MQTT
+
+To also publish readings to Home Assistant, pass your MQTT broker details:
+
+```bash
+python3 r8080_influx.py --threshold 65 \
+  --mqtt-broker homeassistant.local \
+  --mqtt-user YOUR_MQTT_USER \
+  --mqtt-password YOUR_MQTT_PASSWORD
+```
+
+**Prerequisites on the Home Assistant side:**
+
+1. Install the **Mosquitto broker** add-on (Settings → Add-ons → Mosquitto broker)
+2. Create an MQTT user (Settings → People → Users → Add User), or use an existing one
+3. Enable the **MQTT integration** (Settings → Devices & Services → Add Integration → MQTT)
+
+Once the script connects, a sensor called **`sensor.r8080_sound_level`** will auto-appear in Home Assistant via MQTT discovery. It includes full device info (manufacturer, model) and supports history graphs out of the box.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mqtt-broker` | *(disabled)* | MQTT broker hostname. Omit to run without MQTT. |
+| `--mqtt-port` | `1883` | MQTT broker port |
+| `--mqtt-user` | *(none)* | MQTT username |
+| `--mqtt-password` | *(none)* | MQTT password |
+
+MQTT is fully optional — if omitted or if the broker is unreachable, the script continues logging to InfluxDB as usual.
+
+#### Email alerts
+
+To receive email notifications when the sound level exceeds a threshold, add an SMTP notifier to your Home Assistant `configuration.yaml` (edit via Settings → Add-ons → File Editor):
+
+```yaml
+notify:
+  - name: email_alert
+    platform: smtp
+    server: smtp.gmail.com       # or your mail provider
+    port: 587
+    sender: your_email@gmail.com
+    recipient: recipient@example.com
+    username: your_email@gmail.com
+    password: your_app_password   # use an App Password, not your real password
+    encryption: starttls
+```
+
+Restart Home Assistant after saving. Then create an automation (Settings → Automations → Create Automation), or add to `automations.yaml`:
+
+```yaml
+- alias: "Loud noise email alert"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.r8080_sound_level
+      above: 85
+  condition: []
+  action:
+    - service: notify.email_alert
+      data:
+        title: "Noise Alert"
+        message: "Sound level reached {{ states('sensor.r8080_sound_level') }} dB"
+```
+
+### 6. View the Grafana dashboard
 
 Open [http://localhost:9100](http://localhost:9100) in your browser. The **REED R8080 Sound Level Meter** dashboard appears automatically.
 
@@ -78,7 +139,7 @@ r8080-meter/
 ├── r8080_influx.py             # Bridge: reads R8080 → writes InfluxDB
 ├── usb_reader.py               # R8080 USB driver
 ├── 99-decibel-meter.rules      # udev rule for USB permissions
-└── requirements.txt            # pyusb
+└── requirements.txt            # pyusb, paho-mqtt
 ```
 
 ## Protocol documentation
