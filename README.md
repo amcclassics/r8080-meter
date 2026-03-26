@@ -10,7 +10,7 @@ Reads live dB SPL from the meter over USB, streams it into InfluxDB, and display
 ## Hardware
 
 - [REED R8080](https://www.reedinstruments.com/product/r8080-sound-level-meter-with-usb) sound level meter (USB HID, Holtek chipset)
-- Any Linux machine with a USB port
+- Any Linux machine with a USB port (or ESP32 for standalone mode — see below)
 
 ## Quick start
 
@@ -130,6 +130,89 @@ Open [http://localhost:9100](http://localhost:9100) in your browser. The **REED 
 
 Default Grafana credentials: `admin` / `r8080` (anonymous viewing is also enabled).
 
+## ESP32 standalone mode (no PC required)
+
+Instead of reading the R8080 over USB, you can use its 3.5mm analog DC output with an ESP32 + ADS1115 ADC. The ESP32 reads the DC voltage, converts it to dB, and posts directly to InfluxDB over WiFi. No PC, no USB driver, no power cycle issues.
+
+### Hardware needed
+
+- ESP32 dev board (any variant)
+- ADS1115 16-bit ADC breakout board
+- 3.5mm TRS breakout board or cut aux cable
+- USB power source for the ESP32 (wall adapter or power bank)
+- R8080 meter running on AAA batteries (or USB battery eliminators for always-on)
+
+### Wiring
+
+```
+R8080 3.5mm jack          ADS1115            ESP32
+─────────────────         ──────────         ──────
+Tip (Left/signal) ──────→ A0
+Sleeve (Ground)   ──────→ GND  ────────────→ GND
+                          VDD  ────────────→ 3.3V
+                          SDA  ────────────→ GPIO 21
+                          SCL  ────────────→ GPIO 22
+                          ADDR ────────────→ GND (sets I2C address 0x48)
+```
+
+The Ring (Right) pin on the TRS breakout is unused — the R8080 is mono output.
+
+### R8080 DC output specs (from manual)
+
+| Parameter | Value |
+|-----------|-------|
+| Connector | 3.5mm sub-miniature phone jack |
+| DC scale | 10mV per dB |
+| AC scale | 1 Vrms at full scale of selected range |
+| Voltage at 30 dB | 300 mV |
+| Voltage at 130 dB | 1300 mV (1.3V) |
+
+The ADS1115 at gain 1x handles 0–4.096V, so the full R8080 range (0.3–1.3V) fits easily. With 16-bit resolution, each LSB = 0.125mV = 0.0125 dB precision.
+
+### Firmware setup
+
+1. Open `esp32/r8080_adc.ino` in Arduino IDE
+2. Install libraries via Library Manager:
+   - **Adafruit ADS1X15**
+   - **Adafruit BusIO**
+3. Edit the configuration at the top of the file:
+   ```cpp
+   const char* WIFI_SSID     = "YOUR_SSID";
+   const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+   const char* INFLUXDB_URL  = "http://YOUR_PC_IP:9186/write?db=r8080";
+   ```
+   Use your PC's LAN IP for InfluxDB (not `localhost` — the ESP32 is on the network).
+4. Select your ESP32 board and upload
+
+### How it works
+
+- The ESP32 reads the ADS1115 every second
+- Converts voltage to dB: `dB = voltage_mV / 10.0`
+- Posts to InfluxDB using the same line protocol as the USB bridge: `spl,sensor=r8080 db=XX.X`
+- Readings below the threshold (default 65 dB) are printed to serial but not logged
+- The existing Grafana dashboard works with no changes
+
+### Power
+
+- **ESP32 + ADS1115**: powered by a single USB cable (5V from any adapter or power bank)
+- **R8080 meter**: runs on 4x AAA batteries (~50 hour battery life per manual)
+
+The entire setup is PC-independent once the ESP32 is flashed and InfluxDB/Grafana are running.
+
+## Utility scripts
+
+| Script | Description |
+|--------|-------------|
+| `toggle_weighting.py` | Toggle between dBA and dBC frequency weighting |
+| `toggle_speed.py` | Toggle between Fast (125ms) and Slow (1s) response |
+| `toggle_range.py` | Cycle measurement range: 30-130 → 30-90 → 50-110 → 70-130 |
+| `erase_r8080.py` | Erase stored data in the meter's internal memory |
+| `reset_r8080.py` | Send a USB-level reset to unfreeze the meter |
+| `replug_r8080.py` | Unbind/rebind the USB device on Linux (simulates replug) |
+| `probe_r8080.py` | Read a single measurement (for testing connectivity) |
+
+These scripts require the meter to be connected via USB.
+
 ## Project structure
 
 ```
@@ -138,6 +221,7 @@ r8080-meter/
 ├── grafana/provisioning/       # Auto-configured datasource + dashboard
 ├── r8080_influx.py             # Bridge: reads R8080 → writes InfluxDB
 ├── usb_reader.py               # R8080 USB driver
+├── esp32/r8080_adc.ino         # ESP32 firmware: DC output → InfluxDB over WiFi
 ├── 99-decibel-meter.rules      # udev rule for USB permissions
 └── requirements.txt            # pyusb, paho-mqtt
 ```

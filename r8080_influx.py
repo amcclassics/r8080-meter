@@ -4,6 +4,8 @@ REED R8080 → InfluxDB bridge.
 Reads live dB from the R8080 and writes to InfluxDB line protocol over HTTP.
 Optionally publishes to MQTT for Home Assistant integration.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import time
@@ -28,16 +30,29 @@ logging.basicConfig(
 )
 
 
+INFLUX_LOG_INTERVAL = 300  # only re-log InfluxDB errors every 5 minutes
+_influx_last_error_time = 0.0
+_influx_ok = True
+
+
 def write_influx(db_value: float):
     """Write a single dB reading to InfluxDB using line protocol."""
+    global _influx_last_error_time, _influx_ok
     timestamp_ns = int(time.time() * 1e9)
     line = f"spl,sensor=r8080 db={db_value:.1f} {timestamp_ns}"
     data = line.encode("utf-8")
     req = urllib.request.Request(INFLUXDB_URL, data=data, method="POST")
     try:
         urllib.request.urlopen(req, timeout=5)
+        if not _influx_ok:
+            logger.info("InfluxDB connection restored")
+            _influx_ok = True
     except urllib.error.URLError as e:
-        logger.warning(f"InfluxDB write failed: {e}")
+        now = time.time()
+        if _influx_ok or (now - _influx_last_error_time) >= INFLUX_LOG_INTERVAL:
+            logger.warning(f"InfluxDB write failed: {e}")
+            _influx_last_error_time = now
+            _influx_ok = False
 
 
 def connect_mqtt(broker: str, port: int, user: str | None, password: str | None):
@@ -122,21 +137,28 @@ def main():
     skipped_count = 0
     try:
         while True:
-            db = dev.read_spl()
+            loop_start = time.monotonic()
+            reading = dev.read_spl()
             now = datetime.datetime.now().strftime("%H:%M:%S")
-            if db is not None:
+            if reading is not None:
+                db, weighting, speed, range_str = reading
                 bar = "#" * int(max(0, db - 30))
                 if db >= threshold:
                     write_influx(db)
                     if mqtt_client:
                         publish_mqtt(mqtt_client, db)
                     reading_count += 1
-                    print(f"  {now}  {db:5.1f} dB  {bar}  [#{reading_count}]", flush=True)
+                    print(f"  {now}  {db:5.1f} {weighting}  {bar}  [#{reading_count}]", flush=True)
                 else:
                     skipped_count += 1
-                    print(f"  {now}  {db:5.1f} dB  {bar}  (below threshold)", flush=True)
+                    print(f"  {now}  {db:5.1f} {weighting}  {bar}  (below threshold)", flush=True)
             else:
-                print(f"  {now}  -- no reading --", flush=True)
+                did_reset = dev.record_failure()
+                status = "(reset USB)" if did_reset else ""
+                print(f"  {now}  -- no reading -- {status}", flush=True)
+            elapsed = time.monotonic() - loop_start
+            if elapsed < POLL_INTERVAL:
+                time.sleep(POLL_INTERVAL - elapsed)
     except KeyboardInterrupt:
         if mqtt_client:
             mqtt_client.loop_stop()

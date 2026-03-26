@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import sys
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 try:
     import usb.core
@@ -11,6 +13,13 @@ except ImportError:
 # REED R8080 identifiers (Holtek Semiconductor)
 R8080_VENDOR_ID = 0x04D9
 R8080_PRODUCT_ID = 0xE000
+
+
+class SPLReading(NamedTuple):
+    db: float
+    weighting: str  # "dBA" or "dBC"
+    speed: str      # "Fast" or "Slow"
+    range: str      # "30-130", "30-80", "50-100", "60-130"
 
 
 class R8080Device:
@@ -30,9 +39,24 @@ class R8080Device:
     EP_IN = 0x81
     EP_OUT = 0x02
 
+    MAX_CONSECUTIVE_FAILURES = 5
+
+    # Status flags in response data[1]
+    FLAG_DBA = 0x08   # bit 3: 1=dBA, 0=dBC
+    FLAG_FAST = 0x10  # bit 4: 1=Fast, 0=Slow
+
+    # Range codes in response data[3]
+    RANGE_MAP = {
+        0x88: "30-130",
+        0x11: "30-90",
+        0x22: "50-110",
+        0x44: "70-130",
+    }
+
     def __init__(self, logger):
         self.dev = None
         self.logger = logger
+        self._consecutive_failures = 0
 
     def connect(self):
         self.dev = usb.core.find(idVendor=R8080_VENDOR_ID, idProduct=R8080_PRODUCT_ID)
@@ -64,49 +88,94 @@ class R8080Device:
         time.sleep(0.6)
         self.connect()
 
-    def read_spl(self) -> Optional[float]:
-        """Read current dB level from the R8080. Returns float or None."""
-        try:
-            # WriteCmd header (may STALL on subsequent cycles, that's OK)
-            try:
-                self._send_header(0x01, 7)
-            except Exception:
-                pass
-
-            # Acquire command with length prefix on interrupt OUT
-            self.dev.write(
-                self.EP_OUT,
-                bytes([0x07, 0x02, 0x41, 0x00, 0x00, 0x00, 0x00, 0x03]),
-                timeout=1000,
+    def record_failure(self) -> bool:
+        """Record a failed read. Returns True if a USB reset was performed."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            self.logger.warning(
+                f"{self._consecutive_failures} consecutive failures, resetting USB device"
             )
-            self._drain()
-
-            # ReadData header
-            self._send_header(0x04, 32)
-
-            # Read response
-            for _ in range(5):
-                try:
-                    d = bytes(self.dev.read(self.EP_IN, 32, timeout=1500))
-                    cnt = d[0]
-                    data = d[1 : cnt + 1]
-                    if len(data) > 6:
-                        db_val = (data[5] * 256 + data[6]) / 10.0
-                        self._reset()
-                        return round(db_val, 1)
-                    break
-                except Exception:
-                    break
-
-            self._reset()
-            return None
-
-        except Exception as exc:
-            self.logger.warning(f"R8080 read failed: {exc}")
             try:
                 self._reset()
-            except Exception:
-                pass
+                self._consecutive_failures = 0
+                return True
+            except Exception as exc:
+                self.logger.error(f"USB reset failed: {exc}")
+        return False
+
+    def send_command(self, cmd_data: bytes) -> Optional[bytes]:
+        """Send a framed command and return the response payload, or None."""
+        try:
+            self._send_header(0x01, len(cmd_data))
+        except Exception:
+            pass
+
+        self.dev.write(self.EP_OUT, bytes([len(cmd_data)]) + cmd_data, timeout=1000)
+        self._drain()
+
+        try:
+            self._send_header(0x04, 32)
+        except Exception:
+            pass
+
+        for _ in range(5):
+            try:
+                raw = bytes(self.dev.read(self.EP_IN, 32, timeout=1500))
+                cnt = raw[0]
+                return raw[1:cnt + 1]
+            except usb.core.USBError:
+                time.sleep(0.1)
+        return None
+
+    def toggle_weighting(self) -> Optional[str]:
+        """Toggle dBA/dBC weighting. Returns the new weighting or None on failure."""
+        cmd = bytes([0x02, 0x43, 0x00, 0x00, 0x00, 0x00, 0x03])
+        self.send_command(cmd)
+        # Read back current state with an Acquire
+        reading = self.read_spl()
+        if reading:
+            return reading.weighting
+        return None
+
+    def toggle_range(self) -> Optional[str]:
+        """Cycle to next range (30-130 -> 30-80 -> 50-100 -> 60-130). Returns new range or None."""
+        cmd = bytes([0x02, 0x4C, 0x00, 0x00, 0x00, 0x00, 0x03])
+        self.send_command(cmd)
+        reading = self.read_spl()
+        if reading:
+            return reading.range
+        return None
+
+    def toggle_speed(self) -> Optional[str]:
+        """Toggle Fast/Slow response speed. Returns the new speed or None on failure."""
+        cmd = bytes([0x02, 0x46, 0x00, 0x00, 0x00, 0x00, 0x03])
+        self.send_command(cmd)
+        reading = self.read_spl()
+        if reading:
+            return reading.speed
+        return None
+
+    def erase_memory(self) -> bool:
+        """Erase stored memory. Returns True if device echoed confirmation."""
+        erase_cmd = bytes([0x02]) + b'erase' + bytes([0x03])
+        resp = self.send_command(erase_cmd)
+        return resp is not None and resp[0:7] == erase_cmd
+
+    def read_spl(self) -> Optional[SPLReading]:
+        """Read current dB level and weighting from the R8080. Returns SPLReading or None."""
+        try:
+            cmd = bytes([0x02, 0x41, 0x00, 0x00, 0x00, 0x00, 0x03])
+            data = self.send_command(cmd)
+            if data and len(data) > 6:
+                db_val = (data[5] * 256 + data[6]) / 10.0
+                weighting = "dBA" if (data[1] & self.FLAG_DBA) else "dBC"
+                speed = "Fast" if (data[1] & self.FLAG_FAST) else "Slow"
+                range_str = self.RANGE_MAP.get(data[3], f"unknown(0x{data[3]:02x})")
+                self._consecutive_failures = 0
+                return SPLReading(round(db_val, 1), weighting, speed, range_str)
+            return None
+        except Exception as exc:
+            self.logger.warning(f"R8080 read failed: {exc}")
             return None
 
 
